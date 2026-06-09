@@ -1,7 +1,9 @@
 #include "stdafx.h"
 #include "FlexCLI.h"
+#using <System.Core.dll>
 
 namespace FlexCLI {
+	using namespace System::Collections::Generic;
 
 	///<summary>Empty constructor</summary>
 	FlexScene::FlexScene() {
@@ -298,10 +300,11 @@ namespace FlexCLI {
 			throw gcnew Exception("FlexScene::RegisterFluid(...) Invalid input!");
 #pragma endregion
 
-		int maxIndex = 0;
+        int maxIndex = 0;
+		int baseParticle = NumParticles();
 		for (int i = 0; i < springPairIndices->Length / 2; i++) {
-			int ind0 = springPairIndices[2 * i] + NumParticles();
-			int ind1 = springPairIndices[2 * i + 1] + NumParticles();
+			int ind0 = springPairIndices[2 * i] + baseParticle;
+			int ind1 = springPairIndices[2 * i + 1] + baseParticle;
 			if (ind0 > maxIndex)
 				maxIndex = ind0;
 			if (ind1 > maxIndex)
@@ -312,16 +315,16 @@ namespace FlexCLI {
 			SpringLengths->Add(defaultLengths[i]);
 		}
 
-		int currentNumParticles = positions->Length / 3;
+        int currentNumParticles = positions->Length / 3;
 
-		if (maxIndex - NumParticles() >= currentNumParticles)
+		if (maxIndex - baseParticle >= currentNumParticles)
 			throw gcnew Exception("FlexCLI: void FlexScene::RegisterSpringSystem(...) ---> At least one spring index is too high.");
 
 		int toReturn = SpringIndices->Count;
 
 		int anchorCounter = 0;
 		anchorIndices->Sort(anchorIndices);
-		for (int i = 0; i < currentNumParticles; i++) {
+        for (int i = 0; i < currentNumParticles; i++) {
 			//Add each particle to the scene global Particles list
 			array<float>^ pos = gcnew array<float>(3) { positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2] };
 			array<float>^ vel = gcnew array<float>(3) { velocities[i * 3], velocities[i * 3 + 1], velocities[i * 3 + 2] };
@@ -330,7 +333,7 @@ namespace FlexCLI {
 				iM = 0.0f;
 				anchorCounter++;
 			}
-			SpringIndices->Add(NumParticles());
+            SpringIndices->Add(baseParticle + i);
 			Particles->Add(gcnew FlexParticle(pos, vel, iM, selfCollision, false, groupIndex, true));
 
 
@@ -352,122 +355,83 @@ namespace FlexCLI {
 				throw gcnew Exception("Cloth: Group index " + groupIndex + " already in use!");
 #pragma endregion
 
-		List<int>^ springPairIndices = gcnew List<int>();
+        List<int>^ springPairIndices = gcnew List<int>();
 		List<float>^ lengths = gcnew List<float>();
 		List<float>^ stretchStiffnesses = gcnew List<float>();
 
-		for (int i = 0; i < triangles->Length / 3; i++)
+		int baseParticle = NumParticles();
+
+        // Use a HashSet of ordered pairs to deduplicate edges in O(1) per edge
+		System::Collections::Generic::HashSet<System::Int64>^ seenEdges = gcnew System::Collections::Generic::HashSet<System::Int64>();
+
+		int numTris = triangles->Length / 3;
+		for (int i = 0; i < numTris; i++)
 		{
-			//assign triangle indices
-			DynamicTriangleIndices->Add(triangles[i * 3] + NumParticles());
-			DynamicTriangleIndices->Add(triangles[i * 3 + 1] + NumParticles());
-			DynamicTriangleIndices->Add(triangles[i * 3 + 2] + NumParticles());
+			// assign triangle indices (offset by base)
+			DynamicTriangleIndices->Add(triangles[i * 3] + baseParticle);
+			DynamicTriangleIndices->Add(triangles[i * 3 + 1] + baseParticle);
+			DynamicTriangleIndices->Add(triangles[i * 3 + 2] + baseParticle);
 
-
-			//only use unique lines and points
-			int alreadyExistsAs = -1;
-			int candStart = triangles[3 * i];
-			int candEnd = triangles[3 * i + 1];
-			for (int j = 0; j < springPairIndices->Count / 2; j++) {
-				if ((candStart == springPairIndices[j * 2] && candEnd == springPairIndices[j * 2 + 1]) ||
-					(candStart == springPairIndices[j * 2 + 1] && candEnd == springPairIndices[j * 2])) {
-					alreadyExistsAs = j;
-					break;
+			// process the three edges via a small loop to avoid copy/paste
+			for (int e = 0; e < 3; e++) {
+				int a = triangles[i*3 + e];
+				int b = triangles[i*3 + ((e + 1) % 3)];
+				int mn = Math::Min(a, b);
+				int mx = Math::Max(a, b);
+                System::Int64 key = ((System::Int64)mn << 32) | (System::Int64)mx;
+                if (!seenEdges->Contains(key)) {
+					seenEdges->Add(key);
+					springPairIndices->Add(mn);
+					springPairIndices->Add(mx);
+					stretchStiffnesses->Add(stretchStiffness);
+					float newLength = Math::Sqrt(
+						(positions[mn * 3] - positions[mx * 3]) * (positions[mn * 3] - positions[mx * 3]) +
+						(positions[mn * 3 + 1] - positions[mx * 3 + 1]) * (positions[mn * 3 + 1] - positions[mx * 3 + 1]) +
+						(positions[mn * 3 + 2] - positions[mx * 3 + 2]) * (positions[mn * 3 + 2] - positions[mx * 3 + 2])
+					);
+					lengths->Add(preTensionFactor * newLength);
 				}
-			}
-			if (alreadyExistsAs == -1) {
-				springPairIndices->Add(candStart);
-				springPairIndices->Add(candEnd);
-				stretchStiffnesses->Add(stretchStiffness);
-				float newLength = Math::Sqrt(
-					(positions[candStart * 3] - positions[candEnd * 3]) * (positions[candStart * 3] - positions[candEnd * 3]) +
-					(positions[candStart * 3 + 1] - positions[candEnd * 3 + 1]) * (positions[candStart * 3 + 1] - positions[candEnd * 3 + 1]) +
-					(positions[candStart * 3 + 2] - positions[candEnd * 3 + 2]) * (positions[candStart * 3 + 2] - positions[candEnd * 3 + 2])
-				);
-				lengths->Add(preTensionFactor * newLength);
-			}
-
-			alreadyExistsAs = -1;
-			candStart = triangles[3 * i + 1];
-			candEnd = triangles[3 * i + 2];
-			for (int j = 0; j < springPairIndices->Count / 2; j++) {
-				if ((candStart == springPairIndices[j * 2] && candEnd == springPairIndices[j * 2 + 1]) ||
-					(candStart == springPairIndices[j * 2 + 1] && candEnd == springPairIndices[j * 2])) {
-					alreadyExistsAs = j;
-					break;
-				}
-			}
-			if (alreadyExistsAs == -1) {
-				springPairIndices->Add(candStart);
-				springPairIndices->Add(candEnd);
-				stretchStiffnesses->Add(stretchStiffness);
-				float newLength = Math::Sqrt(
-					(positions[candStart * 3] - positions[candEnd * 3]) * (positions[candStart * 3] - positions[candEnd * 3]) +
-					(positions[candStart * 3 + 1] - positions[candEnd * 3 + 1]) * (positions[candStart * 3 + 1] - positions[candEnd * 3 + 1]) +
-					(positions[candStart * 3 + 2] - positions[candEnd * 3 + 2]) * (positions[candStart * 3 + 2] - positions[candEnd * 3 + 2])
-				);
-				lengths->Add(preTensionFactor * newLength);
-			}
-
-			alreadyExistsAs = -1;
-			candStart = triangles[3 * i + 2];
-			candEnd = triangles[3 * i];
-			for (int j = 0; j < springPairIndices->Count / 2; j++) {
-				if ((candStart == springPairIndices[j * 2] && candEnd == springPairIndices[j * 2 + 1]) ||
-					(candStart == springPairIndices[j * 2 + 1] && candEnd == springPairIndices[j * 2])) {
-					alreadyExistsAs = j;
-					break;
-				}
-			}
-			if (alreadyExistsAs == -1) {
-				springPairIndices->Add(candStart);
-				springPairIndices->Add(candEnd);
-				stretchStiffnesses->Add(stretchStiffness);
-				float newLength = Math::Sqrt(
-					(positions[candStart * 3] - positions[candEnd * 3]) * (positions[candStart * 3] - positions[candEnd * 3]) +
-					(positions[candStart * 3 + 1] - positions[candEnd * 3 + 1]) * (positions[candStart * 3 + 1] - positions[candEnd * 3 + 1]) +
-					(positions[candStart * 3 + 2] - positions[candEnd * 3 + 2]) * (positions[candStart * 3 + 2] - positions[candEnd * 3 + 2])
-				);
-				lengths->Add(preTensionFactor * newLength);
 			}
 		}
 
+		// Bending springs: build adjacency once (O(E)) then find common neighbors per edge in O(degree)
 		List<int>^ bendingSprings = gcnew List<int>();
 		if (bendingStiffness > 0.0f) {
-			for (int i = 0; i < springPairIndices->Count / 2; i++) {
-				int startIndex = springPairIndices[2 * i];
-				int endIndex = springPairIndices[2 * i + 1];
+            System::Collections::Generic::Dictionary<int, System::Collections::Generic::HashSet<int>^>^ adj = gcnew System::Collections::Generic::Dictionary<int, System::Collections::Generic::HashSet<int>^>();
+			int edgeCount = springPairIndices->Count / 2;
+			for (int j = 0; j < edgeCount; j++) {
+				int a = springPairIndices[2 * j];
+				int b = springPairIndices[2 * j + 1];
+                if (!adj->ContainsKey(a)) adj->Add(a, gcnew System::Collections::Generic::HashSet<int>());
+				if (!adj->ContainsKey(b)) adj->Add(b, gcnew System::Collections::Generic::HashSet<int>());
+				adj[a]->Add(b);
+				adj[b]->Add(a);
+			}
 
-				List<int>^ neighborsOfStart = gcnew List<int>();
-				List<int>^ neighborsOfEnd = gcnew List<int>();
-				for (int j = 0; j < springPairIndices->Count / 2; j++) {
-					if (springPairIndices[2 * j] == startIndex && springPairIndices[2 * j + 1] != endIndex)
-						neighborsOfStart->Add(springPairIndices[2 * j + 1]);
-					else if (springPairIndices[2 * j + 1] == startIndex && springPairIndices[2 * j] != endIndex)
-						neighborsOfStart->Add(springPairIndices[2 * j]);
+			for (int j = 0; j < edgeCount; j++) {
+				int a = springPairIndices[2 * j];
+				int b = springPairIndices[2 * j + 1];
+                System::Collections::Generic::HashSet<int>^ adjA = adj[a];
+				System::Collections::Generic::HashSet<int>^ adjB = adj[b];
 
-					if (springPairIndices[2 * j] == endIndex && springPairIndices[2 * j + 1] != startIndex)
-						neighborsOfEnd->Add(springPairIndices[2 * j + 1]);
-					else if (springPairIndices[2 * j + 1] == endIndex && springPairIndices[2 * j] != startIndex)
-						neighborsOfEnd->Add(springPairIndices[2 * j]);
+				// iterate the smaller adjacency set to find common neighbors
+				System::Collections::Generic::HashSet<int>^ smaller = (adjA->Count < adjB->Count) ? adjA : adjB;
+				System::Collections::Generic::HashSet<int>^ larger = (smaller == adjA) ? adjB : adjA;
+
+				std::vector<int> common;
+				for each (int c in smaller) {
+					if (c == a || c == b) continue;
+					if (larger->Contains(c)) common.push_back(c);
 				}
 
-
-				List<int>^ commonNeighbors = gcnew List<int>();
-				for (int j = 0; j < neighborsOfStart->Count; j++) {
-					for (int k = 0; k < neighborsOfEnd->Count; k++) {
-						if (neighborsOfStart[j] == neighborsOfEnd[k])
-							commonNeighbors->Add(neighborsOfStart[j]);
-					}
-				}
-
-				if (commonNeighbors->Count == 2) {
-					bendingSprings->AddRange(commonNeighbors);
+				if (common.size() == 2) {
+					bendingSprings->Add(common[0]);
+					bendingSprings->Add(common[1]);
 					stretchStiffnesses->Add(bendingStiffness);
 					float newLength = Math::Sqrt(
-						(positions[commonNeighbors[0] * 3] - positions[commonNeighbors[1] * 3]) * (positions[commonNeighbors[0] * 3] - positions[commonNeighbors[1] * 3]) +
-						(positions[commonNeighbors[0] * 3 + 1] - positions[commonNeighbors[1] * 3 + 1]) * (positions[commonNeighbors[0] * 3 + 1] - positions[commonNeighbors[1] * 3 + 1]) +
-						(positions[commonNeighbors[0] * 3 + 2] - positions[commonNeighbors[1] * 3 + 2]) * (positions[commonNeighbors[0] * 3 + 2] - positions[commonNeighbors[1] * 3 + 2])
+						(positions[common[0] * 3] - positions[common[1] * 3]) * (positions[common[0] * 3] - positions[common[1] * 3]) +
+						(positions[common[0] * 3 + 1] - positions[common[1] * 3 + 1]) * (positions[common[0] * 3 + 1] - positions[common[1] * 3 + 1]) +
+						(positions[common[0] * 3 + 2] - positions[common[1] * 3 + 2]) * (positions[common[0] * 3 + 2] - positions[common[1] * 3 + 2])
 					);
 					lengths->Add(preTensionFactor * newLength);
 				}
